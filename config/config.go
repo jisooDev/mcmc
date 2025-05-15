@@ -1,9 +1,12 @@
 package config
 
+import "time"
+
 type Config struct {
 	Database DatabaseConfig
 	SFTP     SFTPConfig
 	App      AppConfig
+	Cron     CronConfig
 }
 
 type DatabaseConfig struct {
@@ -26,6 +29,12 @@ type SFTPConfig struct {
 type AppConfig struct {
 	DownloadDir string
 	FileTypes   []string
+}
+
+type CronConfig struct {
+	Schedule      string        // Cron expression สำหรับตั้งเวลาทำงาน (เช่น "0 */4 * * *" = ทุก 4 ชั่วโมง)
+	RunOnce       bool          // true = รันครั้งเดียวแล้วจบ, false = รันเป็น cron
+	RetryInterval time.Duration // เวลาที่จะลองใหม่ถ้าการเชื่อมต่อล้มเหลว
 }
 
 func GetConfig() *Config {
@@ -52,6 +61,11 @@ func GetConfig() *Config {
 				"saleorder_item_",
 				"saleorder_header_",
 			},
+		},
+		Cron: CronConfig{
+			Schedule:      "*/5 * * * *", 
+			RunOnce:       false,          
+			RetryInterval: 5 * time.Minute, 
 		},
 	}
 }

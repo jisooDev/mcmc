@@ -8,6 +8,9 @@ import (
 	"mcmc/sftp"
 	"os"
 	"path/filepath"
+	"time"
+
+	"github.com/robfig/cron/v3"
 )
 
 func main() {
@@ -18,16 +21,64 @@ func main() {
 	// โหลดการตั้งค่า
 	cfg := config.GetConfig()
 
+	if cfg.Cron.RunOnce {
+		// โหมดรันครั้งเดียว: รันงานทันทีแล้วจบการทำงาน
+		log.Println("รันในโหมดครั้งเดียว")
+		runTask(cfg)
+	} else {
+		// โหมดรันเป็น cron job
+		log.Printf("รันในโหมด cron job ด้วย schedule: %s", cfg.Cron.Schedule)
+		
+		// สร้าง cron scheduler
+		c := cron.New()
+		
+		// ลงทะเบียน cron job
+		_, err := c.AddFunc(cfg.Cron.Schedule, func() {
+			runTask(cfg)
+		})
+		
+		if err != nil {
+			log.Fatalf("ไม่สามารถตั้งค่า cron job ได้: %v", err)
+		}
+		
+		// เริ่มต้น cron scheduler
+		c.Start()
+		
+		// รันงานทันทีหนึ่งครั้งโดยไม่ต้องรอให้ถึงเวลาตาม schedule
+		log.Println("เริ่มรันงานครั้งแรกทันที...")
+		go runTask(cfg)
+		
+		// แสดงเวลาที่จะรันครั้งถัดไป
+		entries := c.Entries()
+		if len(entries) > 0 {
+			nextRun := entries[0].Next
+			log.Printf("ครั้งถัดไปจะรันในเวลา: %s", nextRun.Format("2006-01-02 15:04:05"))
+		}
+		
+		log.Println("กำลังรันเป็น background service (กด Ctrl+C เพื่อหยุดการทำงาน)")
+		
+		// รอไปเรื่อยๆ เพื่อให้โปรแกรมทำงานตลอดไป
+		select {}
+	}
+}
+
+// runTask ทำงานหลักของการดาวน์โหลดและประมวลผลไฟล์
+func runTask(cfg *config.Config) {
+	startTime := time.Now()
+	log.Printf("เริ่มรันงานเวลา %s", startTime.Format("15:04:05"))
+
 	// เชื่อมต่อกับฐานข้อมูล
 	log.Println("กำลังเชื่อมต่อกับฐานข้อมูล...")
 	db, err := database.NewDB(cfg.Database)
 	if err != nil {
-		log.Fatalf("ไม่สามารถเชื่อมต่อกับฐานข้อมูลได้: %v", err)
+		log.Printf("ไม่สามารถเชื่อมต่อกับฐานข้อมูลได้: %v", err)
+		return
 	}
 	
 	if err := db.MigrateDB(); err != nil {
-	log.Fatalf("ไม่สามารถทำ migration ได้: %v", err)
-}
+		log.Printf("ไม่สามารถทำ migration ได้: %v", err)
+		return
+	}
 	
 	log.Println("เชื่อมต่อกับฐานข้อมูลสำเร็จ")
 
@@ -35,7 +86,8 @@ func main() {
 	log.Println("กำลังเชื่อมต่อกับ SFTP server...")
 	sftpClient, err := sftp.NewClient(cfg.SFTP)
 	if err != nil {
-		log.Fatalf("ไม่สามารถเชื่อมต่อกับ SFTP server ได้: %v", err)
+		log.Printf("ไม่สามารถเชื่อมต่อกับ SFTP server ได้: %v", err)
+		return
 	}
 	defer sftpClient.Close()
 	log.Println("เชื่อมต่อกับ SFTP server สำเร็จ")
@@ -43,11 +95,13 @@ func main() {
 	// สร้างโฟลเดอร์สำหรับเก็บไฟล์ที่ดาวน์โหลด
 	if _, err := os.Stat(cfg.App.DownloadDir); os.IsNotExist(err) {
 		if err := os.MkdirAll(cfg.App.DownloadDir, 0755); err != nil {
-			log.Fatalf("ไม่สามารถสร้างโฟลเดอร์ %s ได้: %v", cfg.App.DownloadDir, err)
+			log.Printf("ไม่สามารถสร้างโฟลเดอร์ %s ได้: %v", cfg.App.DownloadDir, err)
+			return
 		}
 	}
 
 	// ดาวน์โหลดและประมวลผลไฟล์ตาม prefix
+	filesProcessed := 0
 	for _, prefix := range cfg.App.FileTypes {
 		log.Printf("กำลังค้นหาไฟล์ล่าสุดที่ขึ้นต้นด้วย %s...", prefix)
 
@@ -98,6 +152,7 @@ func main() {
 			if err := db.LogFileProcessing(latestFile.Name(), "success", recordCount, ""); err != nil {
 				log.Printf("ไม่สามารถบันทึกประวัติการประมวลผลได้: %v", err)
 			}
+			filesProcessed++
 		}
 
 		// ลบไฟล์ที่ดาวน์โหลดมาเมื่อประมวลผลเสร็จแล้ว
@@ -109,5 +164,7 @@ func main() {
 		}
 	}
 
-	log.Println("การประมวลผลเสร็จสิ้น")
+	endTime := time.Now()
+	duration := endTime.Sub(startTime)
+	log.Printf("การประมวลผลเสร็จสิ้น ประมวลผลไฟล์ %d รายการ ใช้เวลา %s", filesProcessed, duration)
 }

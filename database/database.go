@@ -2,6 +2,7 @@ package database
 
 import (
 	"fmt"
+	"io/ioutil"
 	"log"
 	"mcmc/config"
 	"mcmc/models"
@@ -108,14 +109,26 @@ func (db *DB) SaveSaleOrderSummary(summaries []models.SaleOrderSummary) (int, er
 
 func (db *DB) MigrateDB() error {
 	log.Println("กำลังทำ database migration...")
+
+	originalLogger := db.Logger
+
+	silentLogger := logger.New(
+		log.New(ioutil.Discard, "", 0), 
+		logger.Config{
+			LogLevel: logger.Silent,
+		},
+	)
 	
-	// สร้างหรืออัปเดตตารางตาม models
+	db.Logger = silentLogger
+	
 	err := db.DB.AutoMigrate(
 		&models.FileProcessingLog{},
 		&models.SaleOrderHeader{},
 		&models.SaleOrderItem{},
 		&models.SaleOrderSummary{},
 	)
+
+	db.Logger = originalLogger
 	
 	if err != nil {
 		return fmt.Errorf("ไม่สามารถทำ migration ได้: %v", err)

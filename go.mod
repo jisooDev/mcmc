@@ -4,6 +4,7 @@ go 1.21.6
 
 require (
 	github.com/pkg/sftp v1.13.6
+	github.com/robfig/cron/v3 v3.0.1
 	golang.org/x/crypto v0.18.0
 	gorm.io/driver/sqlserver v1.5.4
 	gorm.io/gorm v1.26.1
