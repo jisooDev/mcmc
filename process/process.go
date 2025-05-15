@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"mcmc/database"
+	"mcmc/models"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -45,32 +46,30 @@ func ProcessFile(db *database.DB, filePath string) (int, error) {
 		return 0, fmt.Errorf("ไม่สามารถอ่าน header ได้: %v", err)
 	}
 
-	// อ่านข้อมูลและแปลงเป็น maps
-	var data []map[string]interface{}
+	// ประมวลผลตามประเภทไฟล์
 	var recordCount int
 
-	// ประมวลผลตามประเภทไฟล์
 	switch fileType {
 	case "header":
-		data, err = readHeaderData(reader, header)
+		headers, err := readHeaderData(reader, header, fileName)
 		if err != nil {
 			return 0, err
 		}
-		recordCount, err = db.SaveSaleOrderHeader(data, fileName)
+		recordCount, _ = db.SaveSaleOrderHeader(headers)
 
 	case "item":
-		data, err = readItemData(reader, header)
+		items, err := readItemData(reader, header, fileName)
 		if err != nil {
 			return 0, err
 		}
-		recordCount, err = db.SaveSaleOrderItem(data, fileName)
+		recordCount, _ = db.SaveSaleOrderItem(items)
 
 	case "summary":
-		data, err = readSummaryData(reader, header)
+		summaries, err := readSummaryData(reader, header, fileName)
 		if err != nil {
 			return 0, err
 		}
-		recordCount, err = db.SaveSaleOrderSummary(data, fileName)
+		recordCount, _ = db.SaveSaleOrderSummary(summaries)
 	}
 
 	if err != nil {
@@ -81,8 +80,8 @@ func ProcessFile(db *database.DB, filePath string) (int, error) {
 }
 
 // readHeaderData อ่านข้อมูลจากไฟล์ header
-func readHeaderData(reader *csv.Reader, headers []string) ([]map[string]interface{}, error) {
-	var result []map[string]interface{}
+func readHeaderData(reader *csv.Reader, headers []string, sourceFile string) ([]models.SaleOrderHeader, error) {
+	var result []models.SaleOrderHeader
 
 	// ตรวจสอบ header
 	expectedHeaders := []string{"DocNo", "OnDate", "DeliveryDate", "SOCustomerId", "CustomerName", "Status", "TerritoryCode", "TotalAmount", "TotalVat", "Remark"}
@@ -91,32 +90,63 @@ func readHeaderData(reader *csv.Reader, headers []string) ([]map[string]interfac
 	}
 
 	// อ่านแต่ละแถว
+	lineCount := 0
 	for {
+		lineCount++
 		record, err := reader.Read()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("เกิดข้อผิดพลาดในการอ่านไฟล์: %v", err)
+			return nil, fmt.Errorf("เกิดข้อผิดพลาดในการอ่านไฟล์บรรทัดที่ %d: %v", lineCount, err)
 		}
 
 		// ตรวจสอบจำนวนฟิลด์
 		if len(record) < len(expectedHeaders) {
-			return nil, fmt.Errorf("จำนวนฟิลด์ไม่ถูกต้อง: คาดหวัง %d แต่เจอ %d", len(expectedHeaders), len(record))
+			return nil, fmt.Errorf("จำนวนฟิลด์ไม่ถูกต้องที่บรรทัด %d: คาดหวัง %d แต่เจอ %d", lineCount, len(expectedHeaders), len(record))
 		}
 
 		// แปลงข้อมูลและเพิ่มลงในผลลัพธ์
-		header := map[string]interface{}{
-			"doc_no":         record[0],
-			"on_date":        parseDate(record[1]),
-			"delivery_date":  parseDate(record[2]),
-			"so_customer_id": record[3],
-			"customer_name":  record[4],
-			"status":         record[5],
-			"territory_code": record[6],
-			"total_amount":   parseFloat(record[7]),
-			"total_vat":      parseFloat(record[8]),
-			"remark":         record[9],
+		onDate := parseDate(record[1])
+		deliveryDate := parseDate(record[2])
+		
+		// ตรวจสอบค่าว่าง
+		var soCustomerId, customerName, status, territoryCode, remark string
+		if len(record) > 3 && record[3] != "" {
+			soCustomerId = record[3]
+		}
+		if len(record) > 4 && record[4] != "" {
+			customerName = record[4]
+		}
+		if len(record) > 5 && record[5] != "" {
+			status = record[5]
+		}
+		if len(record) > 6 && record[6] != "" {
+			territoryCode = record[6]
+		}
+		if len(record) > 9 && record[9] != "" {
+			remark = record[9]
+		}
+
+		header := models.SaleOrderHeader{
+			DocNo:         record[0],
+			SOCustomerID:  soCustomerId,
+			CustomerName:  customerName, 
+			Status:        status,
+			TerritoryCode: territoryCode,
+			TotalAmount:   parseFloat(record[7]),
+			TotalVat:      parseFloat(record[8]),
+			Remark:        remark,
+			SourceFile:    sourceFile,
+			CreatedAt:     time.Now(),
+		}
+		
+		// ตรวจสอบว่ามีค่าวันที่หรือไม่ก่อนกำหนดให้กับ pointer
+		if !onDate.IsZero() {
+			header.OnDate = &onDate
+		}
+		if !deliveryDate.IsZero() {
+			header.DeliveryDate = &deliveryDate
 		}
 
 		result = append(result, header)
@@ -126,8 +156,8 @@ func readHeaderData(reader *csv.Reader, headers []string) ([]map[string]interfac
 }
 
 // readItemData อ่านข้อมูลจากไฟล์ item
-func readItemData(reader *csv.Reader, headers []string) ([]map[string]interface{}, error) {
-	var result []map[string]interface{}
+func readItemData(reader *csv.Reader, headers []string, sourceFile string) ([]models.SaleOrderItem, error) {
+	var result []models.SaleOrderItem
 
 	// ตรวจสอบ header
 	expectedHeaders := []string{"DocNo", "ItemId", "ProductCode", "SOProductId", "SKUUnitTypeId", "Quantity", "Price", "Amount", "Vat", "VatRate", "ItemType", "OrderRank", "RefItemId", "IO_Number"}
@@ -136,36 +166,64 @@ func readItemData(reader *csv.Reader, headers []string) ([]map[string]interface{
 	}
 
 	// อ่านแต่ละแถว
+	lineCount := 0
 	for {
+		lineCount++
 		record, err := reader.Read()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("เกิดข้อผิดพลาดในการอ่านไฟล์: %v", err)
+			return nil, fmt.Errorf("เกิดข้อผิดพลาดในการอ่านไฟล์บรรทัดที่ %d: %v", lineCount, err)
 		}
 
 		// ตรวจสอบจำนวนฟิลด์
 		if len(record) < len(expectedHeaders) {
-			return nil, fmt.Errorf("จำนวนฟิลด์ไม่ถูกต้อง: คาดหวัง %d แต่เจอ %d", len(expectedHeaders), len(record))
+			return nil, fmt.Errorf("จำนวนฟิลด์ไม่ถูกต้องที่บรรทัด %d: คาดหวัง %d แต่เจอ %d", lineCount, len(expectedHeaders), len(record))
+		}
+
+		// ตรวจสอบค่าว่าง
+		var itemId, productCode, soProductId, skuUnitTypeId, itemType, refItemId, ioNumber string
+		if len(record) > 1 && record[1] != "" {
+			itemId = record[1]
+		}
+		if len(record) > 2 && record[2] != "" {
+			productCode = record[2]
+		}
+		if len(record) > 3 && record[3] != "" {
+			soProductId = record[3]
+		}
+		if len(record) > 4 && record[4] != "" {
+			skuUnitTypeId = record[4]
+		}
+		if len(record) > 10 && record[10] != "" {
+			itemType = record[10]
+		}
+		if len(record) > 12 && record[12] != "" {
+			refItemId = record[12]
+		}
+		if len(record) > 13 && record[13] != "" {
+			ioNumber = record[13]
 		}
 
 		// แปลงข้อมูลและเพิ่มลงในผลลัพธ์
-		item := map[string]interface{}{
-			"doc_no":           record[0],
-			"item_id":          record[1],
-			"product_code":     record[2],
-			"so_product_id":    record[3],
-			"sku_unit_type_id": record[4],
-			"quantity":         parseFloat(record[5]),
-			"price":            parseFloat(record[6]),
-			"amount":           parseFloat(record[7]),
-			"vat":              parseFloat(record[8]),
-			"vat_rate":         parseFloat(record[9]),
-			"item_type":        record[10],
-			"order_rank":       parseInt(record[11]),
-			"ref_item_id":      record[12],
-			"io_number":        record[13],
+		item := models.SaleOrderItem{
+			DocNo:         record[0],
+			ItemID:        itemId,
+			ProductCode:   productCode,
+			SOProductID:   soProductId,
+			SKUUnitTypeID: skuUnitTypeId,
+			Quantity:      parseFloat(record[5]),
+			Price:         parseFloat(record[6]),
+			Amount:        parseFloat(record[7]),
+			Vat:           parseFloat(record[8]),
+			VatRate:       parseFloat(record[9]),
+			ItemType:      itemType,
+			OrderRank:     parseInt(record[11]),
+			RefItemID:     refItemId,
+			IONumber:      ioNumber,
+			SourceFile:    sourceFile,
+			CreatedAt:     time.Now(),
 		}
 
 		result = append(result, item)
@@ -175,8 +233,8 @@ func readItemData(reader *csv.Reader, headers []string) ([]map[string]interface{
 }
 
 // readSummaryData อ่านข้อมูลจากไฟล์ summary
-func readSummaryData(reader *csv.Reader, headers []string) ([]map[string]interface{}, error) {
-	var result []map[string]interface{}
+func readSummaryData(reader *csv.Reader, headers []string, sourceFile string) ([]models.SaleOrderSummary, error) {
+	var result []models.SaleOrderSummary
 
 	// ตรวจสอบ header
 	expectedHeaders := []string{"HeaderCount", "ItemCount"}
@@ -185,24 +243,28 @@ func readSummaryData(reader *csv.Reader, headers []string) ([]map[string]interfa
 	}
 
 	// อ่านแต่ละแถว
+	lineCount := 0
 	for {
+		lineCount++
 		record, err := reader.Read()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("เกิดข้อผิดพลาดในการอ่านไฟล์: %v", err)
+			return nil, fmt.Errorf("เกิดข้อผิดพลาดในการอ่านไฟล์บรรทัดที่ %d: %v", lineCount, err)
 		}
 
 		// ตรวจสอบจำนวนฟิลด์
 		if len(record) < len(expectedHeaders) {
-			return nil, fmt.Errorf("จำนวนฟิลด์ไม่ถูกต้อง: คาดหวัง %d แต่เจอ %d", len(expectedHeaders), len(record))
+			return nil, fmt.Errorf("จำนวนฟิลด์ไม่ถูกต้องที่บรรทัด %d: คาดหวัง %d แต่เจอ %d", lineCount, len(expectedHeaders), len(record))
 		}
 
 		// แปลงข้อมูลและเพิ่มลงในผลลัพธ์
-		summary := map[string]interface{}{
-			"header_count": parseInt(record[0]),
-			"item_count":   parseInt(record[1]),
+		summary := models.SaleOrderSummary{
+			HeaderCount: parseInt(record[0]),
+			ItemCount:   parseInt(record[1]),
+			SourceFile:  sourceFile,
+			CreatedAt:   time.Now(),
 		}
 
 		result = append(result, summary)
@@ -217,12 +279,25 @@ func parseDate(dateStr string) time.Time {
 		return time.Time{}
 	}
 
-	date, err := time.Parse("2006-01-02", dateStr)
-	if err != nil {
-		return time.Time{}
+	// ลองรูปแบบต่างๆ ของวันที่
+	layouts := []string{
+		"2006-01-02 15:04:05", 
+        "2006-01-02T15:04:05",
+		"2006-01-02",
+		"02/01/2006",
+		"2/1/2006",
+		"2006/01/02",
 	}
 
-	return date
+	for _, layout := range layouts {
+		date, err := time.Parse(layout, dateStr)
+		if err == nil {
+			return date
+		}
+	}
+
+	// ถ้าแปลงไม่สำเร็จในทุกรูปแบบ
+	return time.Time{}
 }
 
 func parseFloat(numStr string) float64 {
@@ -230,7 +305,11 @@ func parseFloat(numStr string) float64 {
 		return 0
 	}
 
-	num, err := strconv.ParseFloat(numStr, 64)
+	// ลบตัวอักษรที่ไม่เกี่ยวข้องกับตัวเลข (เช่น สัญลักษณ์สกุลเงิน)
+	cleanStr := strings.ReplaceAll(numStr, ",", "")
+	cleanStr = strings.TrimSpace(cleanStr)
+
+	num, err := strconv.ParseFloat(cleanStr, 64)
 	if err != nil {
 		return 0
 	}
@@ -243,9 +322,18 @@ func parseInt(numStr string) int {
 		return 0
 	}
 
-	num, err := strconv.Atoi(numStr)
+	// ลบตัวอักษรที่ไม่เกี่ยวข้องกับตัวเลข
+	cleanStr := strings.ReplaceAll(numStr, ",", "")
+	cleanStr = strings.TrimSpace(cleanStr)
+
+	num, err := strconv.Atoi(cleanStr)
 	if err != nil {
-		return 0
+		// ลองแปลงเป็น float ก่อนแล้วค่อยแปลงเป็น int
+		floatNum, floatErr := strconv.ParseFloat(cleanStr, 64)
+		if floatErr != nil {
+			return 0
+		}
+		return int(floatNum)
 	}
 
 	return num

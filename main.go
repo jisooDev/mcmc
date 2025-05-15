@@ -24,7 +24,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("ไม่สามารถเชื่อมต่อกับฐานข้อมูลได้: %v", err)
 	}
-	defer db.Close()
+	
+	if err := db.MigrateDB(); err != nil {
+	log.Fatalf("ไม่สามารถทำ migration ได้: %v", err)
+}
+	
 	log.Println("เชื่อมต่อกับฐานข้อมูลสำเร็จ")
 
 	// เชื่อมต่อกับ SFTP
@@ -38,23 +42,34 @@ func main() {
 
 	// สร้างโฟลเดอร์สำหรับเก็บไฟล์ที่ดาวน์โหลด
 	if _, err := os.Stat(cfg.App.DownloadDir); os.IsNotExist(err) {
-		os.MkdirAll(cfg.App.DownloadDir, 0755)
+		if err := os.MkdirAll(cfg.App.DownloadDir, 0755); err != nil {
+			log.Fatalf("ไม่สามารถสร้างโฟลเดอร์ %s ได้: %v", cfg.App.DownloadDir, err)
+		}
 	}
 
-	// ดาวน์โหลดและประมวลผลไฟล์แต่ละประเภท
+	// ดาวน์โหลดและประมวลผลไฟล์ตาม prefix
 	for _, prefix := range cfg.App.FileTypes {
 		log.Printf("กำลังค้นหาไฟล์ล่าสุดที่ขึ้นต้นด้วย %s...", prefix)
 
-		// หาไฟล์ล่าสุดตาม prefix
+		// ค้นหาไฟล์ล่าสุดตาม prefix
 		latestFile, err := sftpClient.FindLatestFileByPrefix(prefix)
 		if err != nil {
 			log.Printf("ข้อผิดพลาด: %v", err)
 			continue
 		}
 
+		// ตรวจสอบว่าไฟล์นี้เคยประมวลผลแล้วหรือไม่
+		processed, err := db.CheckFileProcessed(latestFile.Name())
+		if err != nil {
+			log.Printf("ไม่สามารถตรวจสอบประวัติการประมวลผลไฟล์ได้: %v", err)
+		} else if processed {
+			log.Printf("ไฟล์ %s เคยประมวลผลแล้ว ข้ามไปไฟล์ถัดไป", latestFile.Name())
+			continue
+		}
+
 		log.Printf("พบไฟล์ล่าสุด: %s", latestFile.Name())
 
-		// กำหนดพาธของไฟล์
+		// สร้าง path ของไฟล์
 		remoteFilePath := cfg.SFTP.RemotePath + "/" + latestFile.Name()
 		localFilePath := filepath.Join(cfg.App.DownloadDir, latestFile.Name())
 
@@ -63,7 +78,9 @@ func main() {
 		bytesDownloaded, err := sftpClient.DownloadFile(remoteFilePath, localFilePath)
 		if err != nil {
 			log.Printf("ไม่สามารถดาวน์โหลดไฟล์ได้: %v", err)
-			db.LogFileProcessing(latestFile.Name(), "failed", 0, "ไม่สามารถดาวน์โหลดไฟล์ได้: "+err.Error())
+			if err := db.LogFileProcessing(latestFile.Name(), "failed", 0, "ไม่สามารถดาวน์โหลดไฟล์ได้: "+err.Error()); err != nil {
+				log.Printf("ไม่สามารถบันทึกประวัติการประมวลผลได้: %v", err)
+			}
 			continue
 		}
 		log.Printf("ดาวน์โหลดไฟล์ %s สำเร็จ (%d bytes)", latestFile.Name(), bytesDownloaded)
@@ -73,10 +90,14 @@ func main() {
 		recordCount, err := process.ProcessFile(db, localFilePath)
 		if err != nil {
 			log.Printf("ไม่สามารถประมวลผลไฟล์ได้: %v", err)
-			db.LogFileProcessing(latestFile.Name(), "failed", 0, "ไม่สามารถประมวลผลไฟล์ได้: "+err.Error())
+			if err := db.LogFileProcessing(latestFile.Name(), "failed", 0, "ไม่สามารถประมวลผลไฟล์ได้: "+err.Error()); err != nil {
+				log.Printf("ไม่สามารถบันทึกประวัติการประมวลผลได้: %v", err)
+			}
 		} else {
 			log.Printf("ประมวลผลไฟล์ %s สำเร็จ (%d รายการ)", latestFile.Name(), recordCount)
-			db.LogFileProcessing(latestFile.Name(), "success", recordCount, "")
+			if err := db.LogFileProcessing(latestFile.Name(), "success", recordCount, ""); err != nil {
+				log.Printf("ไม่สามารถบันทึกประวัติการประมวลผลได้: %v", err)
+			}
 		}
 
 		// ลบไฟล์ที่ดาวน์โหลดมาเมื่อประมวลผลเสร็จแล้ว
